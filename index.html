@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Trams Montpellier live</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <style>
+    :root {
+      --bg: #ffffff;
+      --fg: #16181d;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --accent: #e11d48;
+      --shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+      --hl: #fff3c4;
+      color-scheme: light;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1b1e24;
+        --fg: #eef0f3;
+        --muted: #9aa1ad;
+        --line: #2e333c;
+        --shadow: 0 6px 24px rgb(0 0 0 / 0.5);
+        --hl: #4a3b0c;
+        color-scheme: dark;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: var(--fg);
+      background: var(--bg);
+    }
+
+    #map { position: fixed; inset: 0; }
+    .tiles { filter: saturate(.35) brightness(1.04); }
+    @media (prefers-color-scheme: dark) {
+      .tiles { filter: invert(1) hue-rotate(180deg) saturate(.3) brightness(.85); }
+    }
+
+    .panel {
+      position: absolute;
+      z-index: 1000;
+      top: 12px;
+      left: 12px;
+      width: 340px;
+      max-height: calc(100% - 24px);
+      display: flex;
+      flex-direction: column;
+      background: var(--bg);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px 8px;
+    }
+
+    h1 { margin: 0; font-size: 18px; display: flex; align-items: center; gap: 6px; }
+    h2 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+    .live-dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--accent);
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { opacity: .25; } }
+
+    .panel-body { padding: 0 14px 12px; overflow-y: auto; }
+    .panel.collapsed .panel-body { display: none; }
+    .panel.collapsed #toggle { transform: rotate(180deg); }
+
+    .icon-btn {
+      border: 0; background: none; color: var(--fg);
+      font-size: 18px; cursor: pointer; padding: 2px 6px; border-radius: 6px;
+    }
+    .icon-btn:hover { background: var(--line); }
+
+    #search {
+      width: 100%;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--bg);
+      color: var(--fg);
+      font: inherit;
+    }
+
+    .chips { display: flex; gap: 6px; margin-top: 10px; }
+    .chip {
+      border: 0; cursor: pointer;
+      min-width: 34px; height: 28px; border-radius: 8px;
+      font: 700 14px/1 system-ui, sans-serif;
+      background: var(--c); color: var(--t);
+    }
+    .chip.off { opacity: .3; }
+    .line-info { margin: 8px 0 0; font-size: 13px; }
+    .line-info:empty { display: none; }
+    .line-info b { font-size: 15px; }
+    .line-info span { display: block; color: var(--muted); font-size: 12px; }
+
+    .badge {
+      display: inline-grid; place-items: center;
+      min-width: 24px; height: 24px; padding: 0 5px; border-radius: 6px;
+      font-weight: 700; font-size: 13px;
+      background: var(--c); color: var(--t);
+      flex: none;
+    }
+
+    .favs { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+    .fav {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 4px 10px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    .fav-info { min-width: 0; }
+    .fav-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fav-dir { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fav-times { grid-column: 2 / 4; display: flex; gap: 10px; font-variant-numeric: tabular-nums; }
+    .fav .icon-btn { grid-row: 1; grid-column: 3; font-size: 14px; color: var(--muted); }
+    .empty { color: var(--muted); font-size: 13px; }
+
+    .time { font-weight: 700; }
+    .time:first-child { font-size: 17px; }
+    .time.theo { color: var(--muted); font-weight: 500; }
+    .time.theo::before { content: "~"; }
+
+    .status { margin: 12px 0 0; color: var(--muted); font-size: 12px; }
+    .status.err { color: var(--accent); }
+
+    .locate {
+      position: absolute; z-index: 1000; right: 12px; bottom: 28px;
+      width: 44px; height: 44px; border-radius: 50%; border: 0;
+      background: var(--bg); color: var(--fg); box-shadow: var(--shadow);
+      font-size: 22px; cursor: pointer;
+    }
+
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--bg); color: var(--fg); }
+    .leaflet-popup-content { margin: 12px 14px; min-width: 230px; }
+    .leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+
+    .pop-title { font-weight: 700; font-size: 15px; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; }
+    .pop-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 2px 8px;
+      padding: 6px 0;
+      border-top: 1px solid var(--line);
+    }
+    .pop-row .fav-times { grid-column: 2 / 3; font-size: 13px; }
+    .pop-row .time:first-child { font-size: 15px; }
+    .star {
+      grid-row: 1 / 3; grid-column: 3;
+      border: 0; background: none; cursor: pointer;
+      font-size: 20px; color: var(--muted);
+    }
+    .star.on { color: #f59e0b; }
+
+    .tram { transition: transform 1s linear; }
+    .leaflet-zoom-anim .tram { transition: none; }
+    .tram.theo { opacity: .55; }
+    .tram-dot {
+      position: relative;
+      width: 26px; height: 26px; border-radius: 50%;
+      display: grid; place-items: center;
+      background: var(--c); color: var(--t);
+      font: 800 13px/1 system-ui, sans-serif;
+      border: 2px solid #fff;
+      box-shadow: 0 1px 4px rgb(0 0 0 / .45);
+    }
+    .tram-arrow {
+      position: absolute; inset: -15px; transform: rotate(var(--bearing, 0deg)); pointer-events: none;
+      filter: drop-shadow(0 0 1.5px #fff) drop-shadow(0 0 1px #fff) drop-shadow(0 1px 2px rgb(0 0 0 / .6));
+    }
+    .tram-arrow::before {
+      content: ""; position: absolute; left: 50%; top: 0; transform: translateX(-50%);
+      border: 8px solid transparent; border-top: 0; border-bottom: 12px solid var(--c);
+    }
+
+    .tram-label {
+      display: none;
+      position: absolute; left: 50%; bottom: calc(100% + 9px); transform: translateX(-50%);
+      white-space: nowrap; pointer-events: none;
+      padding: 2px 7px; border-radius: 6px;
+      background: var(--bg); color: var(--fg);
+      border-left: 3px solid var(--c);
+      font: 600 11px/1.3 system-ui, sans-serif; font-variant-numeric: tabular-nums;
+      box-shadow: 0 1px 4px rgb(0 0 0 / .3);
+    }
+
+    .tram.fav-hl { opacity: 1; }
+    .tram.fav-hl .tram-label {
+      display: block;
+      white-space: pre;
+      background: var(--hl);
+      font-weight: 700;
+      border-left-width: 4px;
+    }
+    .tram.fav-hl .tram-dot {
+      transform: scale(1.3);
+      border-color: #f59e0b;
+      animation: glow 1.4s ease-out infinite;
+    }
+    @keyframes glow {
+      from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--c) 80%, transparent), 0 1px 4px rgb(0 0 0 / .45); }
+      to { box-shadow: 0 0 0 14px transparent, 0 1px 4px rgb(0 0 0 / .45); }
+    }
+
+    .leaflet-tooltip { background: var(--bg); color: var(--fg); border: 0; box-shadow: var(--shadow); padding: 8px 10px; }
+    .leaflet-tooltip-top::before { border-top-color: var(--bg); }
+    .tip-title { font-weight: 700; margin-bottom: 4px; }
+    .tip-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+    .tip .fav-dir { width: 170px; }
+    .tip .fav-times { gap: 8px; margin-left: auto; }
+    .tip .time:first-child { font-size: 14px; }
+
+    @media (max-width: 640px) {
+      .panel { top: auto; bottom: 8px; left: 8px; right: 8px; width: auto; max-height: 48%; }
+      .panel.collapsed #toggle { transform: none; }
+      .panel:not(.collapsed) #toggle { transform: rotate(180deg); }
+      .locate { bottom: auto; top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <aside class="panel" id="panel">
+    <header class="panel-head">
+      <h1>Trams <span class="live-dot"></span> live</h1>
+      <button class="icon-btn" id="toggle" aria-label="Replier">▾</button>
+    </header>
+    <div class="panel-body">
+      <input id="search" list="stations" placeholder="Rechercher un arrêt…" autocomplete="off">
+      <datalist id="stations"></datalist>
+      <div class="chips" id="chips"></div>
+      <p class="line-info" id="lineInfo"></p>
+      <h2>Mes arrêts</h2>
+      <ul class="favs" id="favs"></ul>
+      <p class="status" id="status">Chargement…</p>
+    </div>
+  </aside>
+
+  <button class="locate" id="locate" aria-label="Me localiser">◎</button>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script>
+    const API = 'https://tammticketservice.e-tam.fr/api/public-transport/routes'
+    const NET_KEY = 'tam.network.v3'
+    const FAV_KEY = 'tam.favorites'
+    const HIDDEN_KEY = 'tam.hidden'
+    const VIEW_KEY = 'tam.view'
+    const COLLAPSED_KEY = 'tam.collapsed'
+    const TRIP_POLL = 30e3
+    const TRIP_DETAIL_TTL = 60e3
+    const PASSAGE_REFRESH = 20e3
+
+    const $ = s => document.querySelector(s)
+    const el = (tag, cls, text) => {
+      const e = document.createElement(tag)
+      if (cls) e.className = cls
+      if (text != null) e.textContent = text
+      return e
+    }
+    const store = {
+      get: (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
+      set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)) } catch {} },
+    }
+    const getJSON = async (url, tries = 3) => {
+      try {
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(res.status)
+        return await res.json()
+      } catch (e) {
+        if (tries <= 1) throw e
+        await new Promise(r => setTimeout(r, 1500))
+        return getJSON(url, tries - 1)
+      }
+    }
+    const pool = async (items, n, fn) => {
+      const q = [...items]
+      await Promise.all(Array.from({ length: n }, async () => {
+        while (q.length) { try { await fn(q.shift()) } catch {} }
+      }))
+    }
+
+    const lines = new Map()
+    const stations = new Map()
+    const probes = new Map()
+    const trips = new Map()
+    const tripMarkers = new Map()
+    const durations = new Map()
+    const segments = new Map()
+    const passages = new Map()
+    let favorites = store.get(FAV_KEY, [])
+    const hidden = new Set(store.get(HIDDEN_KEY, []))
+    let lastPollAt = 0
+    let pollError = false
+
+    const dark = matchMedia('(prefers-color-scheme: dark)').matches
+    const view = store.get(VIEW_KEY, { center: [43.6108, 3.8767], zoom: 13 })
+    const map = L.map('map', { zoomControl: false }).setView(view.center, view.zoom)
+    map.on('moveend', () => {
+      const c = map.getCenter()
+      store.set(VIEW_KEY, { center: [c.lat, c.lng], zoom: map.getZoom() })
+    })
+    L.control.zoom({ position: 'topright' }).addTo(map)
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      className: 'tiles',
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Données TaM',
+    }).addTo(map)
+    const stationLayer = L.layerGroup()
+
+    const textColor = hex => {
+      const n = parseInt(hex.slice(1), 16)
+      const lum = 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)
+      return lum > 160 ? '#111' : '#fff'
+    }
+    const badge = line => {
+      const b = el('span', 'badge', line.name)
+      b.style.cssText = `--c:${line.color};--t:${line.text}`
+      return b
+    }
+    const fmtWait = (at, now = Date.now()) => {
+      const s = (at - now) / 1e3
+      if (s < 60) return '< 1 min'
+      if (s < 3600) return `${Math.floor(s / 60)} min`
+      return new Date(at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
+    }
+
+    // meters, equirectangular is plenty at city scale
+    const dist = (a, b) => Math.hypot((a[0] - b[0]) * 110540, (a[1] - b[1]) * 111320 * Math.cos(a[0] * Math.PI / 180))
+
+    async function loadNetwork() {
+      const cached = store.get(NET_KEY)
+      if (cached && Date.now() - cached.at < 864e5) return cached.data
+      const routes = await getJSON(API)
+      const r5 = ([x, y]) => [Math.round(y * 1e5) / 1e5, Math.round(x * 1e5) / 1e5]
+      // 0 = tram, 702 = tram-bus (line A)
+      const data = routes.filter(r => r.type === 0 || r.type === 702).map(r => ({
+        routeId: r.routeId,
+        name: r.name,
+        color: r.color,
+        dirs: [r.outboundName, r.inboundName],
+        topos: r.topologies.map(t => ({
+          dir: t.direction,
+          shape: t.shapeCoordinates.map(r5),
+          stops: t.stations.map(s => [s.id, s.name, ...r5(s.stationCoordinate)]),
+        })),
+      }))
+      store.set(NET_KEY, { at: Date.now(), data })
+      return data
+    }
+
+    function buildNetwork(data) {
+      for (const l of data.sort((a, b) => a.name.localeCompare(b.name))) {
+        const line = { ...l, text: textColor(l.color), layer: L.layerGroup() }
+        lines.set(line.name, line)
+        for (const t of line.topos) {
+          let acc = 0
+          t.cum = t.shape.map((p, i) => (acc += i ? dist(t.shape[i - 1], p) : 0))
+          t.ids = new Set(t.stops.map(s => s[0]))
+          L.polyline(t.shape, { color: l.color, weight: 5, opacity: 0.85, interactive: false }).addTo(line.layer)
+          for (const [id, name, lat, lon] of t.stops) {
+            if (!stations.has(id)) stations.set(id, { id, name, lat, lon, serves: new Map() })
+            stations.get(id).serves.set(`${line.name}:${t.dir}`, { line, dir: t.dir })
+          }
+          // API stop order and shape orientation don't follow the travel direction: order stops along the shape
+          const ordered = t.stops
+            .map(s => ({ id: s[0], i: nearest(t, [s[2], s[3]], 0, t.shape.length - 1).i }))
+            .sort((a, b) => a.i - b.i)
+          ;[0, 0.25, 0.5, 0.75, 1].forEach(q => {
+            const id = ordered[Math.round(q * (ordered.length - 1))].id
+            const key = `${line.name}:${t.dir}:${id}`
+            const ends = q === 0 || q === 1
+            if (!probes.has(key)) probes.set(key, { line, dir: t.dir, stationId: id, ends })
+            else if (ends) probes.get(key).ends = true
+          })
+        }
+        if (!hidden.has(line.name)) line.layer.addTo(map)
+      }
+
+      for (const s of stations.values()) {
+        s.marker = L.circleMarker([s.lat, s.lon], {
+          radius: 5, color: dark ? '#eee' : '#333', weight: 2, fillColor: dark ? '#222' : '#fff', fillOpacity: 1,
+        })
+          .bindPopup(() => stationPopup(s), { autoPanPaddingTopLeft: [360, 20] })
+          .on('popupopen', () => s.marker.closeTooltip())
+          .addTo(stationLayer)
+        stationTip(s)
+      }
+      stationLayer.addTo(map)
+
+      const names = [...new Set([...stations.values()].map(s => s.name))].sort((a, b) => a.localeCompare(b, 'fr'))
+      $('#stations').replaceChildren(...names.map(n => Object.assign(el('option'), { value: n })))
+
+      $('#chips').replaceChildren(...[...lines.values()].map(line => {
+        const c = el('button', 'chip' + (hidden.has(line.name) ? ' off' : ''), line.name)
+        c.style.cssText = `--c:${line.color};--t:${line.text}`
+        c.onmouseenter = () => { hoverLine = line; paintLineInfo() }
+        c.onmouseleave = () => { hoverLine = null; paintLineInfo() }
+        c.onclick = () => {
+          const off = !hidden.has(line.name)
+          off ? hidden.add(line.name) : hidden.delete(line.name)
+          c.classList.toggle('off', off)
+          off ? line.layer.remove() : line.layer.addTo(map)
+          store.set(HIDDEN_KEY, [...hidden])
+          updateStatus()
+        }
+        return c
+      }))
+    }
+
+    const passagesAt = new Map()
+    const servesOf = s => [...s.serves.values()].sort((a, b) => a.line.name.localeCompare(b.line.name) || a.dir - b.dir)
+
+    let hoverLine = null
+
+    function paintLineInfo() {
+      const box = $('#lineInfo')
+      if (!hoverLine) return box.replaceChildren()
+      const counts = [0, 0]
+      for (const [id, m] of tripMarkers) {
+        const t = trips.get(id)
+        if (t?.line === hoverLine && !m.st.waiting) counts[t.dir]++
+      }
+      const n = counts[0] + counts[1]
+      const head = el('div')
+      head.append(`Ligne ${hoverLine.name} · `, el('b', null, String(n)), ` tram${n > 1 ? 's' : ''} en circulation`)
+      box.replaceChildren(head, ...[0, 1].map(d => el('span', null, `${counts[d]} → ${hoverLine.dirs[d]}`)))
+    }
+
+    async function fetchPassages(stationId, line, dir, maxAge = 0) {
+      const key = `${stationId}:${line.name}:${dir}`
+      if (maxAge && Date.now() - (passagesAt.get(key) ?? 0) < maxAge) return
+      passagesAt.set(key, Date.now())
+      const list = (await getJSON(`${API}/real-time-utc/${stationId}?routeId=${line.routeId}&direction=${dir}`))
+        .filter(p => p.routeName === line.name && p.direction === dir)
+        .map(p => ({ at: Date.parse(p.hour), to: p.name, live: !p.isTheorical }))
+        .sort((a, b) => a.at - b.at)
+      passages.set(key, list)
+    }
+
+    function stationTip(s) {
+      const root = el('div', 'tip')
+      root.append(el('div', 'tip-title', s.name))
+      const rows = servesOf(s).map(({ line, dir }) => {
+        const row = el('div', 'tip-row')
+        const times = el('span', 'fav-times')
+        row.append(badge(line), el('span', 'fav-dir', '→ ' + line.dirs[dir]), times)
+        return { row, times, line, dir, key: `${s.id}:${line.name}:${dir}` }
+      })
+      root.append(...rows.map(r => r.row))
+      let timer
+      const paint = () => rows.forEach(r => renderTimes(r.times, r.key, 3))
+      s.marker.bindTooltip(root, { direction: 'top', offset: [0, -6] })
+      s.marker.on('tooltipopen', () => {
+        paint()
+        rows.forEach(r => fetchPassages(s.id, r.line, r.dir, 15e3)
+          .then(() => { paint(); s.marker.getTooltip()?.update() }, () => {}))
+        timer = setInterval(paint, 1e3)
+      })
+      s.marker.on('tooltipclose', () => clearInterval(timer))
+    }
+
+    function renderTimes(container, key, max = 3) {
+      const list = passages.get(key)
+      if (!list) return container.replaceChildren(el('span', 'empty', '…'))
+      const now = Date.now()
+      const next = list.filter(p => p.at > now - 20e3).slice(0, max)
+      if (!next.length) return container.replaceChildren(el('span', 'empty', 'Aucun passage prévu'))
+      container.replaceChildren(...next.map(p => {
+        const t = el('span', 'time' + (p.live ? '' : ' theo'), fmtWait(p.at, now))
+        t.title = `${p.to} · ${p.live ? 'temps réel' : 'horaire théorique'}`
+        return t
+      }))
+    }
+
+    const isFav = (stationId, line, dir) => favorites.some(f => f.stationId === stationId && f.line === line && f.dir === dir)
+
+    function toggleFav(stationId, line, dir) {
+      favorites = isFav(stationId, line, dir)
+        ? favorites.filter(f => !(f.stationId === stationId && f.line === line && f.dir === dir))
+        : [...favorites, { stationId, line, dir }]
+      store.set(FAV_KEY, favorites)
+      renderFavs()
+      refreshFavs()
+    }
+
+    function stationPopup(s) {
+      const root = el('div')
+      root.append(el('div', 'pop-title', s.name))
+      const rows = servesOf(s)
+        .map(({ line, dir }) => {
+          const key = `${s.id}:${line.name}:${dir}`
+          const row = el('div', 'pop-row')
+          const times = el('div', 'fav-times')
+          const star = el('button', 'star', '★')
+          const syncStar = () => {
+            const on = isFav(s.id, line.name, dir)
+            star.classList.toggle('on', on)
+            star.title = on ? 'Retirer des favoris' : 'Ajouter aux favoris'
+          }
+          star.onclick = () => { toggleFav(s.id, line.name, dir); syncStar() }
+          syncStar()
+          row.append(badge(line), el('div', 'fav-dir', '→ ' + line.dirs[dir]), star, times)
+          return { row, times, key, line, dir }
+        })
+      root.append(...rows.map(r => r.row))
+
+      const load = () => rows.forEach(r => fetchPassages(s.id, r.line, r.dir).then(
+        () => renderTimes(r.times, r.key),
+        () => r.times.replaceChildren(el('span', 'empty', 'Indisponible')),
+      ))
+      const paint = () => rows.forEach(r => passages.has(r.key) && renderTimes(r.times, r.key))
+      rows.forEach(r => renderTimes(r.times, r.key))
+      load()
+      const timers = [setInterval(load, PASSAGE_REFRESH), setInterval(paint, 1e3)]
+      s.marker.once('popupclose', () => timers.forEach(clearInterval))
+      return root
+    }
+
+    function renderFavs() {
+      const items = favorites.map(f => {
+        const s = stations.get(f.stationId)
+        const line = lines.get(f.line)
+        if (!s || !line) return null
+        const li = el('li', 'fav')
+        const info = el('div', 'fav-info')
+        info.append(el('div', 'fav-title', s.name), el('div', 'fav-dir', '→ ' + line.dirs[f.dir]))
+        const del = el('button', 'icon-btn', '✕')
+        del.title = 'Retirer'
+        del.onclick = e => { e.stopPropagation(); toggleFav(f.stationId, f.line, f.dir) }
+        const times = el('div', 'fav-times')
+        times.dataset.key = `${f.stationId}:${f.line}:${f.dir}`
+        renderTimes(times, times.dataset.key)
+        li.append(badge(line), info, del, times)
+        li.onclick = () => { map.flyTo([s.lat, s.lon], 16); map.once('moveend', () => s.marker.openPopup()) }
+        return li
+      }).filter(Boolean)
+      if (!items.length) items.push(el('li', 'empty', 'Touchez un arrêt sur la carte puis ★ pour suivre ses prochains passages.'))
+      $('#favs').replaceChildren(...items)
+    }
+
+    const paintFavTimes = () => document.querySelectorAll('#favs .fav-times').forEach(t => renderTimes(t, t.dataset.key))
+
+    async function refreshFavs() {
+      await Promise.allSettled(favorites.map(f => {
+        const line = lines.get(f.line)
+        return line && fetchPassages(f.stationId, line, f.dir)
+      }))
+      paintFavTimes()
+    }
+
+    // No GPS: trips are discovered from the next passages at each branch end (a trip shows up there before
+    // departing, then is kept until its last stop) and their real-time stop times are interpolated along the shape.
+    // Mid-line stops are also probed on a cold start to catch trips already under way.
+    async function pollTrips() {
+      const now = Date.now()
+      const seen = new Set()
+      const cold = now - lastPollAt > 2 * 60e3
+      const targets = [...probes.values()].filter(p => cold || p.ends)
+      let failed = 0
+      await pool(targets, 8, async ({ line, dir, stationId }) => {
+        const list = await getJSON(`${API}/real-time-utc/${stationId}?routeId=${line.routeId}&direction=${dir}`)
+          .catch(e => { failed++; throw e })
+        for (const p of list) {
+          const at = Date.parse(p.hour)
+          if (p.routeName !== line.name || p.direction !== dir || at < now) continue
+          seen.add(p.id)
+          const t = trips.get(p.id) ?? trips.set(p.id, { id: p.id, line, dir, to: p.name, fetchedAt: 0, seenAt: at }).get(p.id)
+          t.seenAt = Math.min(t.seenAt, at)
+        }
+      })
+      pollError = failed === targets.length
+      if (!pollError) lastPollAt = now
+
+      for (const [id, t] of trips) {
+        const over = t.stops ? t.stops.at(-1).at < now - 30e3 : !seen.has(id)
+        if (over) trips.delete(id)
+      }
+
+      const todo = [...trips.values()].filter(t => {
+        if (now - t.fetchedAt < TRIP_DETAIL_TTL) return false
+        if (!t.stops) return t.seenAt - now < (durations.get(`${t.line.name}:${t.dir}`) ?? 90 * 60e3) + 5 * 60e3
+        return t.stops[0].at < now + 3 * 60e3
+      }).sort((a, b) => a.seenAt - b.seenAt)
+      await pool(todo, 6, fetchTrip)
+      renderTrams()
+    }
+
+    async function fetchTrip(t) {
+      const list = await getJSON(`${API}/real-time-utc/trip/${encodeURIComponent(t.id)}`)
+      t.fetchedAt = Date.now()
+      t.stops = list
+        .map(s => ({ id: s.stationId, name: s.stopName, at: Date.parse(s.dateTime), live: !s.isTheorical }))
+        .filter(s => stations.has(s.id))
+        .sort((a, b) => a.at - b.at)
+      if (t.stops.length < 2) { t.stops = null; return }
+      const key = `${t.line.name}:${t.dir}`
+      durations.set(key, Math.max(durations.get(key) ?? 0, t.stops.at(-1).at - t.stops[0].at))
+    }
+
+    function nearest(t, p, from, to) {
+      let best = { i: -1, d: Infinity }
+      for (let i = Math.max(0, from); i <= Math.min(to, t.shape.length - 1); i++) {
+        const d = dist(t.shape[i], p)
+        if (d < best.d) best = { i, d }
+      }
+      return best
+    }
+
+    function segment(line, dir, aId, bId) {
+      const key = `${line.name}:${dir}:${aId}:${bId}`
+      if (segments.has(key)) return segments.get(key)
+      const A = stations.get(aId), B = stations.get(bId)
+      const a = [A.lat, A.lon], b = [B.lat, B.lon]
+      let seg = null
+      for (const t of [...line.topos].sort((x, y) => (x.dir !== dir) - (y.dir !== dir))) {
+        if (!t.ids.has(aId) || !t.ids.has(bId)) continue
+        const n = t.shape.length - 1
+        let ia = nearest(t, a, 0, n)
+        let ib = nearest(t, b, ia.i + 1, n)
+        // loops (line 4) start and end at the same stop: retry anchored on B
+        if (ib.d > 200) { ib = nearest(t, b, 0, n); ia = nearest(t, a, 0, ib.i - 1) }
+        if (ia.i < ib.i && ia.d < 200 && ib.d < 200) { seg = { t, i0: ia.i, i1: ib.i }; break }
+      }
+      segments.set(key, seg ?? { a, b })
+      return segments.get(key)
+    }
+
+    function pointAlong(seg, f) {
+      if (!seg.t) {
+        const { a, b } = seg
+        const bearing = Math.atan2((b[1] - a[1]) * Math.cos(a[0] * Math.PI / 180), b[0] - a[0]) * 180 / Math.PI
+        return { pos: [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f], bearing }
+      }
+      const { t, i0, i1 } = seg
+      const target = t.cum[i0] + (t.cum[i1] - t.cum[i0]) * f
+      let k = i0
+      while (k < i1 - 1 && t.cum[k + 1] < target) k++
+      const p = t.shape[k], q = t.shape[k + 1]
+      const span = t.cum[k + 1] - t.cum[k]
+      const g = span ? Math.min(1, Math.max(0, (target - t.cum[k]) / span)) : 0
+      const bearing = Math.atan2((q[1] - p[1]) * Math.cos(p[0] * Math.PI / 180), q[0] - p[0]) * 180 / Math.PI
+      return { pos: [p[0] + (q[0] - p[0]) * g, p[1] + (q[1] - p[1]) * g], bearing }
+    }
+
+    function tripState(t, now, early = false) {
+      const s = t.stops
+      if (!s || (!early && now < s[0].at - 120e3) || now >= s.at(-1).at) return null
+      const i = s.findLastIndex(x => x.at <= now)
+      if (i < 0) {
+        const st = stations.get(s[0].id)
+        const next = s[1] && stations.get(s[1].id)
+        const bearing = next ? Math.atan2((next.lon - st.lon) * Math.cos(st.lat * Math.PI / 180), next.lat - st.lat) * 180 / Math.PI : 0
+        return { pos: [st.lat, st.lon], bearing, next: s[0], waiting: true }
+      }
+      const a = s[i], b = s[i + 1]
+      const f = (now - a.at) / Math.max(1, b.at - a.at)
+      return { ...pointAlong(segment(t.line, t.dir, a.id, b.id), f), next: b }
+    }
+
+    function tramIcon(line) {
+      return L.divIcon({
+        className: 'tram',
+        iconSize: [26, 26],
+        html: `<div class="tram-label" style="--c:${line.color}"></div><div class="tram-dot" style="--c:${line.color};--t:${line.text}"><i class="tram-arrow"></i>${line.name}</div>`,
+      })
+    }
+
+    function tramPopup(t) {
+      const root = el('div')
+      const head = el('div', 'pop-title')
+      head.append(badge(t.line), '→ ' + t.to)
+      root.append(head)
+      const st = tripState(t, Date.now())
+      if (st) {
+        const next = stations.get(st.next.id)
+        const what = st.waiting ? 'Départ de' : 'Prochain arrêt :'
+        root.append(el('div', null, `${what} ${next.name} · ${fmtWait(st.next.at)}`))
+      }
+      root.append(el('div', 'fav-dir', 'Position estimée d’après les horaires temps réel'))
+      return root
+    }
+
+    function renderTrams() {
+      const now = Date.now()
+      const shown = new Set()
+      const targets = favTargets(now)
+      for (const t of trips.values()) {
+        const st = tripState(t, now, targets.has(t.id))
+        if (!st) continue
+        shown.add(t.id)
+        let m = tripMarkers.get(t.id)
+        if (!m) {
+          m = L.marker(st.pos, { icon: tramIcon(t.line), zIndexOffset: 1000, keyboard: false })
+          // autoPan would drag the map along with the moving tram every second
+          m.bindPopup(() => tramPopup(t), { autoPan: false })
+          m.trip = t
+          m.tip = el('div', 'tip')
+          m.bindTooltip(m.tip, { direction: 'top', offset: [0, -16] })
+          m.on('tooltipopen', () => paintTramTip(m))
+          m.on('popupopen', () => m.closeTooltip())
+          m.on('add', () => paintMarker(m))
+          tripMarkers.set(t.id, m)
+          m.st = st
+          m.addTo(t.line.layer)
+        } else {
+          m.st = st
+          m.setLatLng(st.pos)
+        }
+      }
+      for (const [id, m] of tripMarkers) if (!shown.has(id)) { m.remove(); tripMarkers.delete(id) }
+      for (const [id, m] of tripMarkers) {
+        m.fav = targets.get(id)
+        m.setZIndexOffset(m.fav ? 2000 : 1000)
+        paintMarker(m)
+      }
+      updateStatus()
+    }
+
+    // For each saved stop, the soonest trip heading there, even if still waiting at its terminus
+    function favTargets(now) {
+      const out = new Map()
+      for (const f of favorites) {
+        let best = null
+        for (const t of trips.values()) {
+          if (t.line.name !== f.line || t.dir !== f.dir || !t.stops || now >= t.stops.at(-1).at) continue
+          const stop = t.stops.find(s => s.id === f.stationId && s.at > now - 20e3)
+          if (stop && (!best || stop.at < best.stop.at)) best = { t, stop }
+        }
+        if (!best) continue
+        if (!out.has(best.t.id)) out.set(best.t.id, [])
+        out.get(best.t.id).push({ stationId: f.stationId, at: best.stop.at })
+      }
+      return out
+    }
+
+    function paintMarker(m) {
+      const e = m.getElement()
+      if (!e) return
+      e.style.setProperty('--bearing', m.st.bearing + 'deg')
+      e.classList.toggle('theo', !m.st.next.live)
+      e.classList.toggle('fav-hl', !!m.fav)
+      const label = (m.fav ?? []).map(f => `★ ${stations.get(f.stationId).name} · ${fmtEta(f.at)}`).join('\n')
+      const node = e.firstChild
+      if (node.textContent !== label) node.textContent = label
+      if (m.isTooltipOpen()) paintTramTip(m)
+    }
+
+    function paintTramTip(m) {
+      const { trip: t, st } = m
+      const head = el('div', 'tip-title')
+      head.style.cssText = 'display:flex;gap:6px;align-items:center'
+      head.append(badge(t.line), '→ ' + t.to)
+      const next = el('div')
+      next.append(st.waiting ? 'Départ de ' : 'Prochain arrêt : ', el('b', null, stations.get(st.next.id).name), ` · ${fmtEta(st.next.at)}`)
+      m.tip.replaceChildren(head, next)
+    }
+
+    const fmtEta = at => {
+      const s = Math.max(0, Math.round((at - Date.now()) / 1e3))
+      return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')}`
+    }
+    function updateStatus() {
+      const st = $('#status')
+      if (pollError && !lastPollAt) {
+        st.textContent = 'Impossible de joindre l’API TaM, nouvel essai…'
+        st.classList.add('err')
+        return
+      }
+      if (!lastPollAt) return
+      const shown = [...tripMarkers.values()].filter(m => map.hasLayer(m)).length
+      const ago = Math.round((Date.now() - lastPollAt) / 1e3)
+      st.classList.toggle('err', pollError)
+      st.textContent = `${shown} tram${shown > 1 ? 's' : ''} en circulation · positions estimées, mises à jour il y a ${ago} s`
+        + (pollError ? ' · reconnexion…' : '')
+    }
+
+    $('#search').addEventListener('change', e => {
+      const q = e.target.value.trim().toLowerCase()
+      const all = [...stations.values()]
+      const s = all.find(s => s.name.toLowerCase() === q) ?? all.find(s => s.name.toLowerCase().includes(q))
+      if (!s) return
+      map.flyTo([s.lat, s.lon], 16)
+      map.once('moveend', () => s.marker.openPopup())
+      e.target.value = ''
+      e.target.blur()
+    })
+
+    $('#panel').classList.toggle('collapsed', store.get(COLLAPSED_KEY, false))
+    $('#toggle').onclick = () => store.set(COLLAPSED_KEY, $('#panel').classList.toggle('collapsed'))
+
+    let me
+    $('#locate').onclick = () => map.locate({ setView: true, maxZoom: 16 })
+    map.on('locationfound', e => {
+      me ??= L.circleMarker(e.latlng, { radius: 7, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 }).addTo(map)
+      me.setLatLng(e.latlng)
+    })
+
+    async function init() {
+      try {
+        buildNetwork(await loadNetwork())
+      } catch {
+        $('#status').textContent = 'Impossible de charger le réseau TaM.'
+        $('#status').classList.add('err')
+        return
+      }
+      renderFavs()
+      refreshFavs()
+      pollTrips()
+      setInterval(pollTrips, TRIP_POLL)
+      setInterval(refreshFavs, PASSAGE_REFRESH)
+      setInterval(() => { renderTrams(); paintFavTimes(); if (hoverLine) paintLineInfo() }, 1e3)
+    }
+
+    init()
+  </script>
+</body>
+</html>
