@@ -647,7 +647,7 @@
         for (let x = cx - 1; x <= cx + 1; x++) for (let y = cy - 1; y <= cy + 1; y++) for (const h of grid.get(`${x}:${y}`) ?? []) {
           if (h.s === s || Math.hypot(h.p[0] - p[0], h.p[1] - p[1]) > NEAR) continue
           const dot = d[0] * h.d[0] + d[1] * h.d[1]
-          if (Math.abs(dot) > 0.8) out.push({ ...h, dot })
+          if (Math.abs(dot) > 0.8) out.push({ s: h.s, i: h.i, dot })
         }
         return out
       }
@@ -815,10 +815,7 @@
           tripMarkers.set(t.id, m)
           m.st = st
           m.addTo(t.line.layer)
-        } else {
-          m.st = st
-          m.setLatLng(st.pos)
-        }
+        } else m.st = st
       }
       for (const [id, m] of tripMarkers) if (!shown.has(id)) { m.remove(); tripMarkers.delete(id) }
       for (const [id, m] of tripMarkers) {
@@ -834,15 +831,20 @@
       requestAnimationFrame(animateTrams)
       // setLatLng mid zoom animation would cancel Leaflet's own marker transform
       if (map._animatingZoom) return
-      const now = Date.now()
+      const now = Date.now(), view = map.getBounds().pad(0.2)
       for (const m of tripMarkers.values()) {
-        if (!map.hasLayer(m)) continue
+        if (!map.hasLayer(m) || !view.contains(m.getLatLng())) continue
         const st = tripState(m.trip, now, !!m.fav)
-        if (!st) continue
-        m.st = st
-        m.setLatLng(st.pos)
-        m.getElement()?.style.setProperty('--bearing', st.bearing + 'deg')
+        if (st) { m.st = st; placeTram(m) }
       }
+    }
+
+    // phones choke on rewriting ~80 markers every frame: only touch the DOM for a visible change
+    function placeTram(m) {
+      const p = map.latLngToLayerPoint(m.st.pos)
+      if (!m.px || Math.abs(p.x - m.px.x) + Math.abs(p.y - m.px.y) >= 1) { m.px = p; m.setLatLng(m.st.pos) }
+      const e = m.getElement(), bearing = Math.round(m.st.bearing)
+      if (e && e.bearing !== bearing) { e.bearing = bearing; e.style.setProperty('--bearing', bearing + 'deg') }
     }
 
     // For each saved stop, the soonest trip heading there, even if still waiting at its terminus
@@ -865,7 +867,7 @@
     function paintMarker(m) {
       const e = m.getElement()
       if (!e) return
-      e.style.setProperty('--bearing', m.st.bearing + 'deg')
+      placeTram(m)
       e.classList.toggle('theo', !m.st.next.live)
       e.classList.toggle('fav-hl', !!m.fav)
       const label = (m.fav ?? []).map(f => `★ ${stations.get(f.stationId).name} · ${fmtEta(f.at)}`).join('\n')
