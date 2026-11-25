@@ -376,7 +376,6 @@
           let acc = 0
           t.cum = t.shape.map((p, i) => (acc += i ? dist(t.shape[i - 1], p) : 0))
           t.ids = new Set(t.stops.map(s => s[0]))
-          L.polyline(t.shape, { color: l.color, weight: 5, opacity: 0.85, interactive: false }).addTo(line.layer)
           for (const [id, name, lat, lon] of t.stops) {
             if (!stations.has(id)) stations.set(id, { id, name, lat, lon, serves: new Map() })
             stations.get(id).serves.set(`${line.name}:${t.dir}`, { line, dir: t.dir })
@@ -395,10 +394,17 @@
         }
         if (!hidden.has(line.name)) line.layer.addTo(map)
       }
+      for (const s of layoutLanes()) {
+        new LaneLine(s.ll, { lanes: s.lanes, color: s.line.color, weight: 5, opacity: 0.85, interactive: false }).addTo(s.line.layer)
+      }
 
+      // above the trams so a stop stays clickable under a tram; the pane itself must not swallow clicks
+      const stationPane = map.createPane('stations')
+      stationPane.style.zIndex = 620
+      stationPane.style.pointerEvents = 'none'
       for (const s of stations.values()) {
         s.marker = L.circleMarker([s.lat, s.lon], {
-          radius: 5, color: dark ? '#eee' : '#333', weight: 2, fillColor: dark ? '#222' : '#fff', fillOpacity: 1,
+          pane: 'stations', radius: 5, color: dark ? '#eee' : '#333', weight: 2, fillColor: dark ? '#222' : '#fff', fillOpacity: 1,
         })
           .bindPopup(() => stationPopup(s), { autoPanPaddingTopLeft: [360, 20] })
           .on('popupopen', () => s.marker.closeTooltip())
@@ -616,6 +622,78 @@
       const key = `${t.line.name}:${t.dir}`
       durations.set(key, Math.max(durations.get(key) ?? 0, t.stops.at(-1).at - t.stops[0].at))
     }
+
+    // Lines sharing a street are drawn side by side: each shape point gets a lane, in line widths off the shape
+    function layoutLanes() {
+      const kx = 111320 * Math.cos(43.6 * Math.PI / 180), CELL = 40, NEAR = 20
+      const shapes = []
+      for (const line of lines.values()) for (const t of line.topos) {
+        // densified to ~25 m so lane changes stay short
+        const ll = t.shape.flatMap((p, i) => {
+          if (!i) return [p]
+          const q = t.shape[i - 1], n = Math.floor(dist(q, p) / 25)
+          return [...Array.from({ length: Math.max(0, n - 1) }, (_, j) => [q[0] + (p[0] - q[0]) * (j + 1) / n, q[1] + (p[1] - q[1]) * (j + 1) / n]), p]
+        })
+        shapes.push({ line, ll, pts: ll.map(p => [p[1] * kx, p[0] * 111320]) })
+      }
+      const dirAt = (pts, i) => {
+        const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)]
+        const n = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1
+        return [(b[0] - a[0]) / n, (b[1] - a[1]) / n]
+      }
+      const grid = new Map()
+      const parallel = (s, i) => {
+        const p = s.pts[i], d = dirAt(s.pts, i), cx = Math.floor(p[0] / CELL), cy = Math.floor(p[1] / CELL), out = []
+        for (let x = cx - 1; x <= cx + 1; x++) for (let y = cy - 1; y <= cy + 1; y++) for (const h of grid.get(`${x}:${y}`) ?? []) {
+          if (h.s === s || Math.hypot(h.p[0] - p[0], h.p[1] - p[1]) > NEAR) continue
+          const dot = d[0] * h.d[0] + d[1] * h.d[1]
+          if (Math.abs(dot) > 0.8) out.push({ ...h, dot })
+        }
+        return out
+      }
+      shapes.forEach((s, k) => {
+        s.k = k
+        s.pts.forEach((p, i) => {
+          const key = `${Math.floor(p[0] / CELL)}:${Math.floor(p[1] / CELL)}`
+          if (!grid.has(key)) grid.set(key, [])
+          grid.get(key).push({ s, i, p, d: dirAt(s.pts, i) })
+        })
+      })
+      for (const s of shapes) s.hits = s.pts.map((_, i) => parallel(s, i))
+      for (const s of shapes) {
+        const raw = s.pts.map((_, i) => {
+          // shapes alongside, +1/-1 for running with/against s; both directions of a line share their neighbours
+          const along = new Map([[s, 1]])
+          for (const h of s.hits[i]) {
+            const sg = Math.sign(h.dot)
+            if (!along.has(h.s)) along.set(h.s, sg)
+            if (h.s.line === s.line) for (const h2 of h.s.hits[h.i]) if (!along.has(h2.s)) along.set(h2.s, sg * Math.sign(h2.dot))
+          }
+          const names = [...new Set([...along.keys()].map(o => o.line.name))].sort()
+          // lanes go left to right of one reference shape, since shapes (and line 4's loop) run either way
+          const ref = [...along.keys()].reduce((x, y) => (y.k < x.k ? y : x))
+          return (names.indexOf(s.line.name) - (names.length - 1) / 2) * along.get(ref)
+        })
+        // median over 7 points drops one-point blips at crossings
+        s.lanes = raw.map((_, i) => {
+          const w = raw.slice(Math.max(0, i - 3), i + 4).sort((a, b) => a - b)
+          return w[w.length >> 1]
+        })
+      }
+      return shapes
+    }
+
+    const LaneLine = L.Polyline.extend({
+      _project() {
+        L.Polyline.prototype._project.call(this)
+        const { lanes, weight } = this.options
+        this._rings = this._rings.map(r => r.map((p, i) => {
+          const d = r[Math.min(r.length - 1, i + 1)].subtract(r[Math.max(0, i - 1)])
+          const n = Math.hypot(d.x, d.y) || 1
+          return p.add(L.point(-d.y / n, d.x / n).multiplyBy(lanes[i] * weight))
+        }))
+      },
+    })
 
     function nearest(t, p, from, to) {
       let best = { i: -1, d: Infinity }
