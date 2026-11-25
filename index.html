@@ -173,8 +173,6 @@
     }
     .star.on { color: #f59e0b; }
 
-    .tram { transition: transform 1s linear; }
-    .leaflet-zoom-anim .tram { transition: none; }
     .tram.theo { opacity: .55; }
     .tram-dot {
       position: relative;
@@ -636,15 +634,29 @@
       let seg = null
       for (const t of [...line.topos].sort((x, y) => (x.dir !== dir) - (y.dir !== dir))) {
         if (!t.ids.has(aId) || !t.ids.has(bId)) continue
-        const n = t.shape.length - 1
-        let ia = nearest(t, a, 0, n)
-        let ib = nearest(t, b, ia.i + 1, n)
-        // loops (line 4) start and end at the same stop: retry anchored on B
-        if (ib.d > 200) { ib = nearest(t, b, 0, n); ia = nearest(t, a, 0, ib.i - 1) }
-        if (ia.i < ib.i && ia.d < 200 && ib.d < 200) { seg = { t, i0: ia.i, i1: ib.i }; break }
+        // shapes may run against the trip (line 1 shares one shape for both directions) and loops pass a stop twice:
+        // keep the closest pair of passes, whichever way round
+        for (const x of passes(t, a)) for (const y of passes(t, b)) {
+          const span = Math.abs(t.cum[y] - t.cum[x])
+          if (x !== y && (!seg || span < seg.span)) seg = { t, i0: x, i1: y, span }
+        }
+        if (seg) break
       }
       segments.set(key, seg ?? { a, b })
       return segments.get(key)
+    }
+
+    // closest shape index of each run of points within 200 m of p
+    function passes(t, p) {
+      const out = []
+      let run = null
+      t.shape.forEach((q, i) => {
+        const d = dist(q, p)
+        if (d >= 200) { run = null; return }
+        if (!run) out.push(run = { i, d })
+        else if (d < run.d) Object.assign(run, { i, d })
+      })
+      return out.map(r => r.i)
     }
 
     function pointAlong(seg, f) {
@@ -655,12 +667,13 @@
       }
       const { t, i0, i1 } = seg
       const target = t.cum[i0] + (t.cum[i1] - t.cum[i0]) * f
-      let k = i0
-      while (k < i1 - 1 && t.cum[k + 1] < target) k++
+      const lo = Math.min(i0, i1), hi = Math.max(i0, i1)
+      let k = lo
+      while (k < hi - 1 && t.cum[k + 1] < target) k++
       const p = t.shape[k], q = t.shape[k + 1]
       const span = t.cum[k + 1] - t.cum[k]
       const g = span ? Math.min(1, Math.max(0, (target - t.cum[k]) / span)) : 0
-      const bearing = Math.atan2((q[1] - p[1]) * Math.cos(p[0] * Math.PI / 180), q[0] - p[0]) * 180 / Math.PI
+      const bearing = Math.atan2((q[1] - p[1]) * Math.cos(p[0] * Math.PI / 180), q[0] - p[0]) * 180 / Math.PI + (i1 < i0 ? 180 : 0)
       return { pos: [p[0] + (q[0] - p[0]) * g, p[1] + (q[1] - p[1]) * g], bearing }
     }
 
@@ -736,6 +749,22 @@
         paintMarker(m)
       }
       updateStatus()
+    }
+
+    // Positions are recomputed every frame instead of CSS-transitioned, so a returning tab, zoom or pan never glides
+    function animateTrams() {
+      requestAnimationFrame(animateTrams)
+      // setLatLng mid zoom animation would cancel Leaflet's own marker transform
+      if (map._animatingZoom) return
+      const now = Date.now()
+      for (const m of tripMarkers.values()) {
+        if (!map.hasLayer(m)) continue
+        const st = tripState(m.trip, now, !!m.fav)
+        if (!st) continue
+        m.st = st
+        m.setLatLng(st.pos)
+        m.getElement()?.style.setProperty('--bearing', st.bearing + 'deg')
+      }
     }
 
     // For each saved stop, the soonest trip heading there, even if still waiting at its terminus
@@ -831,6 +860,7 @@
       setInterval(pollTrips, TRIP_POLL)
       setInterval(refreshFavs, PASSAGE_REFRESH)
       setInterval(() => { renderTrams(); paintFavTimes(); if (hoverLine) paintLineInfo() }, 1e3)
+      requestAnimationFrame(animateTrams)
     }
 
     init()
